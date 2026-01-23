@@ -147,6 +147,18 @@ func TestExtractRepoPath(t *testing.T) {
 			wantErr: true,
 		},
 
+		// Empty path components rejected
+		{
+			name:    "double slash in https URL",
+			input:   "https://github.com/org//repo",
+			wantErr: true,
+		},
+		{
+			name:    "double slash in ssh URL",
+			input:   "git@github.com:org//repo",
+			wantErr: true,
+		},
+
 		// Path traversal rejected at extractRepoPath level
 		{
 			name:    "path traversal in https URL",
@@ -206,6 +218,9 @@ func TestValidatePathComponents(t *testing.T) {
 		{name: "dotdot at end", path: "org/repo/..", wantErr: true},
 		{name: "single dot is fine", path: "org/./repo", wantErr: false},
 		{name: "dotdot as substring is fine", path: "org/..repo/foo", wantErr: false},
+		{name: "empty component (double slash)", path: "org//repo", wantErr: true},
+		{name: "empty component at start", path: "/org/repo", wantErr: true},
+		{name: "empty component at end", path: "org/repo/", wantErr: true},
 	}
 
 	for _, tt := range tests {

@@ -83,10 +83,13 @@ func extractRepoPath(inputURL string) (repoPath string, cloneURL string, err err
 	return host + "/" + path, inputURL, nil
 }
 
-// validatePathComponents rejects paths containing ".." components,
-// which are never valid org/repo names and indicate traversal attempts.
+// validatePathComponents rejects paths containing ".." or empty components,
+// which are never valid org/repo names.
 func validatePathComponents(path string) error {
 	for _, component := range strings.Split(path, "/") {
+		if component == "" {
+			return fmt.Errorf("empty path component in: %s", path)
+		}
 		if component == ".." {
 			return fmt.Errorf("invalid path component '..': %s", path)
 		}
@@ -98,25 +101,44 @@ func gitClone(cloneURL, targetDir string) error {
 	cmd := exec.Command("git", "clone", cloneURL)
 	cmd.Dir = targetDir
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = os.Stderr // git output goes to stderr; stdout reserved for path output
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
-// isOurClone checks whether the directory at fullTarget was cloned from
-// the expected URL by inspecting its git remote configuration.
-func isOurClone(fullTarget, expectedURL string) bool {
-	cmd := exec.Command("git", "-C", fullTarget, "config", "--get", "remote.origin.url")
-	out, err := cmd.Output()
+// shouldCleanup checks whether the partial clone at fullTarget should be
+// removed. It only returns true if the remote URL matches our intent AND
+// the clone is not recoverable (HEAD doesn't resolve to a valid commit).
+func shouldCleanup(fullTarget, expectedURL string) bool {
+	// Verify remote matches our clone URL
+	urlCmd := exec.Command("git", "-C", fullTarget, "config", "--get", "remote.origin.url")
+	out, err := urlCmd.Output()
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(string(out)) == expectedURL
+	if strings.TrimSpace(string(out)) != expectedURL {
+		return false
+	}
+
+	// If HEAD resolves, the repo has all objects and is recoverable
+	// (e.g., checkout failed but data is intact) — don't delete it
+	headCmd := exec.Command("git", "-C", fullTarget, "rev-parse", "--verify", "HEAD")
+	if headCmd.Run() == nil {
+		return false
+	}
+
+	return true
 }
 
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "Usage: git-clone <repository-url>")
+		os.Exit(1)
+	}
+
+	if len(os.Args) > 2 {
+		fmt.Fprintln(os.Stderr, "Usage: git-clone <repository-url>")
+		fmt.Fprintf(os.Stderr, "unexpected extra arguments: %s\n", strings.Join(os.Args[2:], " "))
 		os.Exit(1)
 	}
 
@@ -167,9 +189,9 @@ func main() {
 	}
 
 	if err := gitClone(cloneURL, parentDir); err != nil {
-		// Only clean up if the directory was created by our clone attempt
+		// Clean up if the directory was created by our clone attempt and is not recoverable
 		if _, statErr := os.Stat(fullTarget); statErr == nil {
-			if isOurClone(fullTarget, cloneURL) {
+			if shouldCleanup(fullTarget, cloneURL) {
 				if rmErr := os.RemoveAll(fullTarget); rmErr != nil {
 					fmt.Fprintf(os.Stderr, "warning: failed to clean up partial clone: %v\n", rmErr)
 				}
