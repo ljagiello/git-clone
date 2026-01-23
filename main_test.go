@@ -115,6 +115,26 @@ func TestExtractRepoPath(t *testing.T) {
 			wantCloneURL: "ssh://git@github.com/org/repo.git",
 		},
 
+		// Host case normalization
+		{
+			name:         "https uppercase host normalized",
+			input:        "https://GitHub.Com/Org/repo",
+			wantPath:     "github.com/Org/repo",
+			wantCloneURL: "https://GitHub.Com/Org/repo",
+		},
+		{
+			name:         "ssh uppercase host normalized",
+			input:        "git@GitHub.COM:org/repo.git",
+			wantPath:     "github.com/org/repo",
+			wantCloneURL: "git@GitHub.COM:org/repo.git",
+		},
+		{
+			name:         "bare uppercase host normalized",
+			input:        "GitHub.com/org/repo",
+			wantPath:     "github.com/org/repo",
+			wantCloneURL: "https://GitHub.com/org/repo",
+		},
+
 		// Error cases
 		{
 			name:    "https missing path",
@@ -315,4 +335,55 @@ func TestPathContainment(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRemoveEmptyParents(t *testing.T) {
+	t.Run("removes empty parents up to base", func(t *testing.T) {
+		base := t.TempDir()
+		nested := filepath.Join(base, "a", "b", "c")
+		if err := os.MkdirAll(nested, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		removeEmptyParents(nested, base)
+
+		// All empty dirs should be gone
+		if _, err := os.Stat(filepath.Join(base, "a")); !os.IsNotExist(err) {
+			t.Errorf("expected 'a' to be removed, but it still exists")
+		}
+	})
+
+	t.Run("stops at non-empty parent", func(t *testing.T) {
+		base := t.TempDir()
+		nested := filepath.Join(base, "a", "b", "c")
+		if err := os.MkdirAll(nested, 0755); err != nil {
+			t.Fatal(err)
+		}
+		// Put a file in "a/b" so it's not empty after "c" is removed
+		f, err := os.Create(filepath.Join(base, "a", "b", "keep.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+
+		removeEmptyParents(nested, base)
+
+		// "c" should be removed but "b" and "a" should remain
+		if _, err := os.Stat(nested); !os.IsNotExist(err) {
+			t.Errorf("expected 'c' to be removed")
+		}
+		if _, err := os.Stat(filepath.Join(base, "a", "b")); err != nil {
+			t.Errorf("expected 'a/b' to still exist: %v", err)
+		}
+	})
+
+	t.Run("never removes base directory", func(t *testing.T) {
+		base := t.TempDir()
+
+		removeEmptyParents(base, base)
+
+		if _, err := os.Stat(base); err != nil {
+			t.Errorf("base directory should not be removed: %v", err)
+		}
+	})
 }

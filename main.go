@@ -44,6 +44,7 @@ func extractRepoPath(inputURL string) (repoPath string, cloneURL string, err err
 			if idx := strings.LastIndex(host, "@"); idx != -1 {
 				host = host[idx+1:]
 			}
+			host = strings.ToLower(host)
 			path := strings.TrimSuffix(strings.Trim(afterColon, "/"), ".git")
 			if host == "" || path == "" || !strings.Contains(path, "/") {
 				return "", "", fmt.Errorf("invalid SSH URL (expected [user@]host:org/repo): %s", inputURL)
@@ -68,8 +69,8 @@ func extractRepoPath(inputURL string) (repoPath string, cloneURL string, err err
 		return "", "", fmt.Errorf("URL missing host: %s", inputURL)
 	}
 
-	// Use Hostname() to strip port numbers for directory naming
-	host := parsedURL.Hostname()
+	// Use Hostname() to strip port numbers, ToLower for case-insensitive hosts
+	host := strings.ToLower(parsedURL.Hostname())
 
 	path := strings.Trim(parsedURL.Path, "/")
 	path = strings.TrimSuffix(path, ".git")
@@ -130,34 +131,47 @@ func shouldCleanup(fullTarget, expectedURL string) bool {
 	return true
 }
 
-func main() {
+// removeEmptyParents removes empty directories walking up from dir,
+// stopping at (and never removing) the base directory.
+func removeEmptyParents(dir, base string) {
+	for dir != base && strings.HasPrefix(dir, base) {
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) > 0 {
+			return
+		}
+		os.Remove(dir)
+		dir = filepath.Dir(dir)
+	}
+}
+
+func run() int {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "Usage: git-clone <repository-url>")
-		os.Exit(1)
+		return 1
 	}
 
 	if len(os.Args) > 2 {
 		fmt.Fprintln(os.Stderr, "Usage: git-clone <repository-url>")
 		fmt.Fprintf(os.Stderr, "unexpected extra arguments: %s\n", strings.Join(os.Args[2:], " "))
-		os.Exit(1)
+		return 1
 	}
 
 	arg := os.Args[1]
 	if strings.HasPrefix(arg, "-") {
 		fmt.Fprintln(os.Stderr, "Usage: git-clone <repository-url>")
-		os.Exit(1)
+		return 1
 	}
 
 	repoPath, cloneURL, err := extractRepoPath(arg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
 
 	base, err := baseDir()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
 
 	// Resolve and verify the target stays within base directory
@@ -165,7 +179,7 @@ func main() {
 	baseClean := filepath.Clean(base) + string(os.PathSeparator)
 	if !strings.HasPrefix(fullTarget+string(os.PathSeparator), baseClean) {
 		fmt.Fprintf(os.Stderr, "resolved path escapes base directory: %s\n", fullTarget)
-		os.Exit(1)
+		return 1
 	}
 
 	if info, err := os.Stat(fullTarget); err == nil {
@@ -174,10 +188,10 @@ func main() {
 			kind = "directory"
 		}
 		fmt.Fprintf(os.Stderr, "already exists (%s): %s\n", kind, fullTarget)
-		os.Exit(1)
+		return 1
 	} else if !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "cannot access %s: %v\n", fullTarget, err)
-		os.Exit(1)
+		return 1
 	}
 
 	// Parent dir (host/org) — git clone will create the repo dir itself
@@ -185,7 +199,7 @@ func main() {
 
 	if err := os.MkdirAll(parentDir, 0755); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
 
 	if err := gitClone(cloneURL, parentDir); err != nil {
@@ -197,6 +211,8 @@ func main() {
 				}
 			}
 		}
+		// Remove empty parent directories we may have created
+		removeEmptyParents(parentDir, filepath.Clean(base))
 
 		fmt.Fprintln(os.Stderr, err)
 		exitCode := 1
@@ -204,8 +220,13 @@ func main() {
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		}
-		os.Exit(exitCode)
+		return exitCode
 	}
 
 	fmt.Println(fullTarget)
+	return 0
+}
+
+func main() {
+	os.Exit(run())
 }
