@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"unicode"
 )
 
 func baseDir() (string, error) {
@@ -31,13 +30,13 @@ func baseDir() (string, error) {
 //   - cloneURL: the normalized URL to pass to git clone
 func extractRepoPath(inputURL string) (repoPath string, cloneURL string, err error) {
 	// Handle SSH-style URLs: [user@]host:org/repo.git
-	// Disambiguate from host:port/path by checking if the part after : starts with a digit.
+	// Disambiguate from host:port/path by checking if the part after : starts with an ASCII digit.
 	if strings.Contains(inputURL, ":") && !strings.Contains(inputURL, "://") {
 		parts := strings.SplitN(inputURL, ":", 2)
 		afterColon := parts[1]
 
-		// If part after : starts with a digit, it's host:port/path, not SSH
-		if len(afterColon) > 0 && unicode.IsDigit(rune(afterColon[0])) {
+		// If part after : starts with an ASCII digit, it's host:port/path, not SSH
+		if len(afterColon) > 0 && afterColon[0] >= '0' && afterColon[0] <= '9' {
 			// Treat as bare URL with port — fall through to HTTP parsing
 			inputURL = "https://" + inputURL
 		} else {
@@ -48,6 +47,9 @@ func extractRepoPath(inputURL string) (repoPath string, cloneURL string, err err
 			path := strings.TrimSuffix(strings.Trim(afterColon, "/"), ".git")
 			if host == "" || path == "" || !strings.Contains(path, "/") {
 				return "", "", fmt.Errorf("invalid SSH URL (expected [user@]host:org/repo): %s", inputURL)
+			}
+			if err := validatePathComponents(path); err != nil {
+				return "", "", err
 			}
 			return host + "/" + path, inputURL, nil
 		}
@@ -74,8 +76,22 @@ func extractRepoPath(inputURL string) (repoPath string, cloneURL string, err err
 	if path == "" || !strings.Contains(path, "/") {
 		return "", "", fmt.Errorf("URL must contain org/repo path: %s", inputURL)
 	}
+	if err := validatePathComponents(path); err != nil {
+		return "", "", err
+	}
 
 	return host + "/" + path, inputURL, nil
+}
+
+// validatePathComponents rejects paths containing ".." components,
+// which are never valid org/repo names and indicate traversal attempts.
+func validatePathComponents(path string) error {
+	for _, component := range strings.Split(path, "/") {
+		if component == ".." {
+			return fmt.Errorf("invalid path component '..': %s", path)
+		}
+	}
+	return nil
 }
 
 func gitClone(cloneURL, targetDir string) error {
@@ -87,13 +103,30 @@ func gitClone(cloneURL, targetDir string) error {
 	return cmd.Run()
 }
 
+// isOurClone checks whether the directory at fullTarget was cloned from
+// the expected URL by inspecting its git remote configuration.
+func isOurClone(fullTarget, expectedURL string) bool {
+	cmd := exec.Command("git", "-C", fullTarget, "config", "--get", "remote.origin.url")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == expectedURL
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "Usage: git-clone <repository-url>")
 		os.Exit(1)
 	}
 
-	repoPath, cloneURL, err := extractRepoPath(os.Args[1])
+	arg := os.Args[1]
+	if strings.HasPrefix(arg, "-") {
+		fmt.Fprintln(os.Stderr, "Usage: git-clone <repository-url>")
+		os.Exit(1)
+	}
+
+	repoPath, cloneURL, err := extractRepoPath(arg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -134,9 +167,13 @@ func main() {
 	}
 
 	if err := gitClone(cloneURL, parentDir); err != nil {
-		// Clean up partial clone directory if it was created
+		// Only clean up if the directory was created by our clone attempt
 		if _, statErr := os.Stat(fullTarget); statErr == nil {
-			os.RemoveAll(fullTarget)
+			if isOurClone(fullTarget, cloneURL) {
+				if rmErr := os.RemoveAll(fullTarget); rmErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to clean up partial clone: %v\n", rmErr)
+				}
+			}
 		}
 
 		fmt.Fprintln(os.Stderr, err)
@@ -147,4 +184,6 @@ func main() {
 		}
 		os.Exit(exitCode)
 	}
+
+	fmt.Println(fullTarget)
 }

@@ -146,12 +146,27 @@ func TestExtractRepoPath(t *testing.T) {
 			input:   "",
 			wantErr: true,
 		},
+
+		// Path traversal rejected at extractRepoPath level
 		{
-			name:         "path traversal in https URL",
-			input:        "https://evil.com/../../etc/passwd",
-			wantPath:     "evil.com/../../etc/passwd",
-			wantCloneURL: "https://evil.com/../../etc/passwd",
-			// extractRepoPath itself allows this; containment is checked in main
+			name:    "path traversal in https URL",
+			input:   "https://evil.com/../../etc/passwd",
+			wantErr: true,
+		},
+		{
+			name:    "path traversal in ssh URL",
+			input:   "git@evil.com:../../etc/passwd",
+			wantErr: true,
+		},
+		{
+			name:    "dotdot in middle of https path",
+			input:   "https://github.com/org/../other/repo",
+			wantErr: true,
+		},
+		{
+			name:    "dotdot in middle of ssh path",
+			input:   "git@github.com:org/../other/repo",
+			wantErr: true,
 		},
 	}
 
@@ -173,6 +188,34 @@ func TestExtractRepoPath(t *testing.T) {
 			}
 			if gotCloneURL != tt.wantCloneURL {
 				t.Errorf("extractRepoPath(%q) cloneURL = %q, want %q", tt.input, gotCloneURL, tt.wantCloneURL)
+			}
+		})
+	}
+}
+
+func TestValidatePathComponents(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{name: "valid org/repo", path: "org/repo", wantErr: false},
+		{name: "valid nested", path: "org/sub/repo", wantErr: false},
+		{name: "dotdot at start", path: "../org/repo", wantErr: true},
+		{name: "dotdot in middle", path: "org/../repo", wantErr: true},
+		{name: "dotdot at end", path: "org/repo/..", wantErr: true},
+		{name: "single dot is fine", path: "org/./repo", wantErr: false},
+		{name: "dotdot as substring is fine", path: "org/..repo/foo", wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePathComponents(tt.path)
+			if tt.wantErr && err == nil {
+				t.Errorf("validatePathComponents(%q) = nil, want error", tt.path)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("validatePathComponents(%q) = %v, want nil", tt.path, err)
 			}
 		})
 	}
