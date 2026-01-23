@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -11,7 +12,11 @@ import (
 
 func baseDir() (string, error) {
 	if env := os.Getenv("GIT_CLONE_ROOT"); env != "" {
-		return env, nil
+		abs, err := filepath.Abs(env)
+		if err != nil {
+			return "", fmt.Errorf("invalid GIT_CLONE_ROOT: %w", err)
+		}
+		return abs, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -21,15 +26,23 @@ func baseDir() (string, error) {
 }
 
 func extractRepoPath(inputURL string) (string, error) {
-	// Handle SSH-style URLs: git@host:org/repo.git
+	// Handle SSH-style URLs: [user@]host:org/repo.git
 	if strings.Contains(inputURL, ":") && !strings.Contains(inputURL, "://") {
 		parts := strings.SplitN(inputURL, ":", 2)
-		host := strings.TrimPrefix(parts[0], "git@")
+		host := parts[0]
+		if idx := strings.LastIndex(host, "@"); idx != -1 {
+			host = host[idx+1:]
+		}
 		path := strings.TrimSuffix(strings.Trim(parts[1], "/"), ".git")
-		if host == "" || path == "" {
-			return "", fmt.Errorf("invalid SSH URL: %s", inputURL)
+		if host == "" || path == "" || !strings.Contains(path, "/") {
+			return "", fmt.Errorf("invalid SSH URL (expected [user@]host:org/repo): %s", inputURL)
 		}
 		return host + "/" + path, nil
+	}
+
+	// If no scheme is present, prepend https://
+	if !strings.Contains(inputURL, "://") {
+		inputURL = "https://" + inputURL
 	}
 
 	parsedURL, err := url.Parse(inputURL)
@@ -40,13 +53,16 @@ func extractRepoPath(inputURL string) (string, error) {
 		return "", fmt.Errorf("URL missing host: %s", inputURL)
 	}
 
+	// Use Hostname() to strip port numbers
+	host := parsedURL.Hostname()
+
 	path := strings.Trim(parsedURL.Path, "/")
 	path = strings.TrimSuffix(path, ".git")
 	if path == "" || !strings.Contains(path, "/") {
 		return "", fmt.Errorf("URL must contain org/repo path: %s", inputURL)
 	}
 
-	return parsedURL.Host + "/" + path, nil
+	return host + "/" + path, nil
 }
 
 func gitClone(repoURL, targetDir string) error {
@@ -77,14 +93,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Parent dir (host/org) — git clone will create the repo dir itself
-	parentDir := filepath.Join(base, filepath.Dir(repoPath))
+	// Resolve and verify the target stays within base directory
+	fullTarget := filepath.Clean(filepath.Join(base, repoPath))
+	baseClean := filepath.Clean(base) + string(os.PathSeparator)
+	if !strings.HasPrefix(fullTarget+string(os.PathSeparator), baseClean) {
+		fmt.Fprintf(os.Stderr, "resolved path escapes base directory: %s\n", fullTarget)
+		os.Exit(1)
+	}
 
-	fullTarget := filepath.Join(base, repoPath)
-	if info, err := os.Stat(fullTarget); err == nil && info.IsDir() {
+	if _, err := os.Stat(fullTarget); err == nil {
 		fmt.Fprintf(os.Stderr, "already exists: %s\n", fullTarget)
 		os.Exit(1)
 	}
+
+	// Parent dir (host/org) — git clone will create the repo dir itself
+	parentDir := filepath.Dir(fullTarget)
 
 	if err := os.MkdirAll(parentDir, 0755); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -93,6 +116,11 @@ func main() {
 
 	if err := gitClone(repoURL, parentDir); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		exitCode := 1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		os.Exit(exitCode)
 	}
 }
