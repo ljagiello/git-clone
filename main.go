@@ -102,9 +102,11 @@ func gitClone(cloneURL, targetDir string) error {
 	cmd := exec.Command("git", "clone", cloneURL)
 	cmd.Dir = targetDir
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stderr // git output goes to stderr; stdout reserved for path output
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		os.Stderr.Write(output)
+	}
+	return err
 }
 
 // shouldCleanup checks whether the partial clone at fullTarget should be
