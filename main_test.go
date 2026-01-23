@@ -3,87 +3,116 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestExtractRepoPath(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		want    string
-		wantErr bool
+		name         string
+		input        string
+		wantPath     string
+		wantCloneURL string
+		wantErr      bool
 	}{
 		// HTTPS URLs
 		{
-			name:  "https with .git suffix",
-			input: "https://github.com/org/repo.git",
-			want:  "github.com/org/repo",
+			name:         "https with .git suffix",
+			input:        "https://github.com/org/repo.git",
+			wantPath:     "github.com/org/repo",
+			wantCloneURL: "https://github.com/org/repo.git",
 		},
 		{
-			name:  "https without .git suffix",
-			input: "https://github.com/org/repo",
-			want:  "github.com/org/repo",
+			name:         "https without .git suffix",
+			input:        "https://github.com/org/repo",
+			wantPath:     "github.com/org/repo",
+			wantCloneURL: "https://github.com/org/repo",
 		},
 		{
-			name:  "http scheme",
-			input: "http://github.com/org/repo",
-			want:  "github.com/org/repo",
+			name:         "http scheme",
+			input:        "http://github.com/org/repo",
+			wantPath:     "github.com/org/repo",
+			wantCloneURL: "http://github.com/org/repo",
 		},
 		{
-			name:  "https with trailing slash",
-			input: "https://github.com/org/repo/",
-			want:  "github.com/org/repo",
+			name:         "https with trailing slash",
+			input:        "https://github.com/org/repo/",
+			wantPath:     "github.com/org/repo",
+			wantCloneURL: "https://github.com/org/repo/",
 		},
 		{
-			name:  "nested path (org/suborg/repo)",
-			input: "https://github.com/org/suborg/repo.git",
-			want:  "github.com/org/suborg/repo",
+			name:         "nested path (org/suborg/repo)",
+			input:        "https://github.com/org/suborg/repo.git",
+			wantPath:     "github.com/org/suborg/repo",
+			wantCloneURL: "https://github.com/org/suborg/repo.git",
 		},
 
 		// SSH URLs
 		{
-			name:  "ssh git@host:org/repo.git",
-			input: "git@github.com:org/repo.git",
-			want:  "github.com/org/repo",
+			name:         "ssh git@host:org/repo.git",
+			input:        "git@github.com:org/repo.git",
+			wantPath:     "github.com/org/repo",
+			wantCloneURL: "git@github.com:org/repo.git",
 		},
 		{
-			name:  "ssh git@host:org/repo without .git",
-			input: "git@github.com:org/repo",
-			want:  "github.com/org/repo",
+			name:         "ssh git@host:org/repo without .git",
+			input:        "git@github.com:org/repo",
+			wantPath:     "github.com/org/repo",
+			wantCloneURL: "git@github.com:org/repo",
 		},
 		{
-			name:  "ssh deploy@host:org/repo.git",
-			input: "deploy@github.com:org/repo.git",
-			want:  "github.com/org/repo",
+			name:         "ssh deploy@host:org/repo.git",
+			input:        "deploy@github.com:org/repo.git",
+			wantPath:     "github.com/org/repo",
+			wantCloneURL: "deploy@github.com:org/repo.git",
 		},
 		{
-			name:  "ssh host:org/repo (no user)",
-			input: "github.com:org/repo.git",
-			want:  "github.com/org/repo",
+			name:         "ssh host:org/repo (no user)",
+			input:        "github.com:org/repo.git",
+			wantPath:     "github.com/org/repo",
+			wantCloneURL: "github.com:org/repo.git",
 		},
 
 		// Bare URLs (no scheme)
 		{
-			name:  "bare host/org/repo",
-			input: "github.com/org/repo",
-			want:  "github.com/org/repo",
+			name:         "bare host/org/repo",
+			input:        "github.com/org/repo",
+			wantPath:     "github.com/org/repo",
+			wantCloneURL: "https://github.com/org/repo",
 		},
 		{
-			name:  "bare host/org/repo.git",
-			input: "github.com/org/repo.git",
-			want:  "github.com/org/repo",
+			name:         "bare host/org/repo.git",
+			input:        "github.com/org/repo.git",
+			wantPath:     "github.com/org/repo",
+			wantCloneURL: "https://github.com/org/repo.git",
 		},
 
 		// Port handling
 		{
-			name:  "https with port 443",
-			input: "https://github.com:443/org/repo",
-			want:  "github.com/org/repo",
+			name:         "https with port 443",
+			input:        "https://github.com:443/org/repo",
+			wantPath:     "github.com/org/repo",
+			wantCloneURL: "https://github.com:443/org/repo",
 		},
 		{
-			name:  "https with custom port",
-			input: "https://git.example.com:8080/org/repo",
-			want:  "git.example.com/org/repo",
+			name:         "https with custom port",
+			input:        "https://git.example.com:8080/org/repo",
+			wantPath:     "git.example.com/org/repo",
+			wantCloneURL: "https://git.example.com:8080/org/repo",
+		},
+		{
+			name:         "bare host:port/org/repo treated as HTTP not SSH",
+			input:        "git.example.com:8080/org/repo",
+			wantPath:     "git.example.com/org/repo",
+			wantCloneURL: "https://git.example.com:8080/org/repo",
+		},
+
+		// ssh:// scheme
+		{
+			name:         "ssh:// scheme URL",
+			input:        "ssh://git@github.com/org/repo.git",
+			wantPath:     "github.com/org/repo",
+			wantCloneURL: "ssh://git@github.com/org/repo.git",
 		},
 
 		// Error cases
@@ -118,19 +147,20 @@ func TestExtractRepoPath(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "path traversal in https URL",
-			input:   "https://evil.com/../../etc/passwd",
-			want:    "evil.com/../../etc/passwd",
+			name:         "path traversal in https URL",
+			input:        "https://evil.com/../../etc/passwd",
+			wantPath:     "evil.com/../../etc/passwd",
+			wantCloneURL: "https://evil.com/../../etc/passwd",
 			// extractRepoPath itself allows this; containment is checked in main
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := extractRepoPath(tt.input)
+			gotPath, gotCloneURL, err := extractRepoPath(tt.input)
 			if tt.wantErr {
 				if err == nil {
-					t.Errorf("extractRepoPath(%q) = %q, want error", tt.input, got)
+					t.Errorf("extractRepoPath(%q) = (%q, %q), want error", tt.input, gotPath, gotCloneURL)
 				}
 				return
 			}
@@ -138,8 +168,11 @@ func TestExtractRepoPath(t *testing.T) {
 				t.Errorf("extractRepoPath(%q) unexpected error: %v", tt.input, err)
 				return
 			}
-			if got != tt.want {
-				t.Errorf("extractRepoPath(%q) = %q, want %q", tt.input, got, tt.want)
+			if gotPath != tt.wantPath {
+				t.Errorf("extractRepoPath(%q) path = %q, want %q", tt.input, gotPath, tt.wantPath)
+			}
+			if gotCloneURL != tt.wantCloneURL {
+				t.Errorf("extractRepoPath(%q) cloneURL = %q, want %q", tt.input, gotCloneURL, tt.wantCloneURL)
 			}
 		})
 	}
@@ -216,7 +249,7 @@ func TestPathContainment(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fullTarget := filepath.Clean(filepath.Join(base, tt.repoPath))
 			baseClean := filepath.Clean(base) + string(os.PathSeparator)
-			escaped := !hasPrefix(fullTarget+string(os.PathSeparator), baseClean)
+			escaped := !strings.HasPrefix(fullTarget+string(os.PathSeparator), baseClean)
 
 			if escaped != tt.escapes {
 				t.Errorf("path %q: escaped=%v, want escaped=%v (resolved: %s)",
@@ -224,9 +257,4 @@ func TestPathContainment(t *testing.T) {
 			}
 		})
 	}
-}
-
-// hasPrefix mirrors the containment check in main.
-func hasPrefix(path, prefix string) bool {
-	return len(path) >= len(prefix) && path[:len(prefix)] == prefix
 }

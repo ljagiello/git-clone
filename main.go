@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 func baseDir() (string, error) {
@@ -25,19 +26,31 @@ func baseDir() (string, error) {
 	return filepath.Join(home, "code"), nil
 }
 
-func extractRepoPath(inputURL string) (string, error) {
+// extractRepoPath parses the input URL and returns:
+//   - repoPath: the host/org/repo directory structure
+//   - cloneURL: the normalized URL to pass to git clone
+func extractRepoPath(inputURL string) (repoPath string, cloneURL string, err error) {
 	// Handle SSH-style URLs: [user@]host:org/repo.git
+	// Disambiguate from host:port/path by checking if the part after : starts with a digit.
 	if strings.Contains(inputURL, ":") && !strings.Contains(inputURL, "://") {
 		parts := strings.SplitN(inputURL, ":", 2)
-		host := parts[0]
-		if idx := strings.LastIndex(host, "@"); idx != -1 {
-			host = host[idx+1:]
+		afterColon := parts[1]
+
+		// If part after : starts with a digit, it's host:port/path, not SSH
+		if len(afterColon) > 0 && unicode.IsDigit(rune(afterColon[0])) {
+			// Treat as bare URL with port — fall through to HTTP parsing
+			inputURL = "https://" + inputURL
+		} else {
+			host := parts[0]
+			if idx := strings.LastIndex(host, "@"); idx != -1 {
+				host = host[idx+1:]
+			}
+			path := strings.TrimSuffix(strings.Trim(afterColon, "/"), ".git")
+			if host == "" || path == "" || !strings.Contains(path, "/") {
+				return "", "", fmt.Errorf("invalid SSH URL (expected [user@]host:org/repo): %s", inputURL)
+			}
+			return host + "/" + path, inputURL, nil
 		}
-		path := strings.TrimSuffix(strings.Trim(parts[1], "/"), ".git")
-		if host == "" || path == "" || !strings.Contains(path, "/") {
-			return "", fmt.Errorf("invalid SSH URL (expected [user@]host:org/repo): %s", inputURL)
-		}
-		return host + "/" + path, nil
 	}
 
 	// If no scheme is present, prepend https://
@@ -47,27 +60,28 @@ func extractRepoPath(inputURL string) (string, error) {
 
 	parsedURL, err := url.Parse(inputURL)
 	if err != nil {
-		return "", fmt.Errorf("invalid URL: %w", err)
+		return "", "", fmt.Errorf("invalid URL: %w", err)
 	}
 	if parsedURL.Host == "" {
-		return "", fmt.Errorf("URL missing host: %s", inputURL)
+		return "", "", fmt.Errorf("URL missing host: %s", inputURL)
 	}
 
-	// Use Hostname() to strip port numbers
+	// Use Hostname() to strip port numbers for directory naming
 	host := parsedURL.Hostname()
 
 	path := strings.Trim(parsedURL.Path, "/")
 	path = strings.TrimSuffix(path, ".git")
 	if path == "" || !strings.Contains(path, "/") {
-		return "", fmt.Errorf("URL must contain org/repo path: %s", inputURL)
+		return "", "", fmt.Errorf("URL must contain org/repo path: %s", inputURL)
 	}
 
-	return host + "/" + path, nil
+	return host + "/" + path, inputURL, nil
 }
 
-func gitClone(repoURL, targetDir string) error {
-	cmd := exec.Command("git", "clone", repoURL)
+func gitClone(cloneURL, targetDir string) error {
+	cmd := exec.Command("git", "clone", cloneURL)
 	cmd.Dir = targetDir
+	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -79,9 +93,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	repoURL := os.Args[1]
-
-	repoPath, err := extractRepoPath(repoURL)
+	repoPath, cloneURL, err := extractRepoPath(os.Args[1])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -101,8 +113,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	if _, err := os.Stat(fullTarget); err == nil {
-		fmt.Fprintf(os.Stderr, "already exists: %s\n", fullTarget)
+	if info, err := os.Stat(fullTarget); err == nil {
+		kind := "path"
+		if info.IsDir() {
+			kind = "directory"
+		}
+		fmt.Fprintf(os.Stderr, "already exists (%s): %s\n", kind, fullTarget)
+		os.Exit(1)
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "cannot access %s: %v\n", fullTarget, err)
 		os.Exit(1)
 	}
 
@@ -114,7 +133,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := gitClone(repoURL, parentDir); err != nil {
+	if err := gitClone(cloneURL, parentDir); err != nil {
+		// Clean up partial clone directory if it was created
+		if _, statErr := os.Stat(fullTarget); statErr == nil {
+			os.RemoveAll(fullTarget)
+		}
+
 		fmt.Fprintln(os.Stderr, err)
 		exitCode := 1
 		var exitErr *exec.ExitError
