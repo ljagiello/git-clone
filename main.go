@@ -159,6 +159,50 @@ func run() int {
 	}
 
 	arg := os.Args[1]
+	if arg == "--help" || arg == "-h" {
+		help := `Usage: git-clone <repository-url>
+
+Clone a Git repository into an organized directory structure.
+
+The target directory is: <base>/<host>/<org>/<repo>
+where <base> defaults to ~/code (override with GIT_CLONE_ROOT).
+
+Accepted URL formats:
+  git-clone https://github.com/org/repo.git    HTTPS
+  git-clone http://github.com/org/repo          HTTP
+  git-clone git@github.com:org/repo.git         SSH (user@host:path)
+  git-clone ssh://git@github.com/org/repo.git   SSH (explicit scheme)
+  git-clone github.com/org/repo                 bare (https:// inferred)
+  git-clone git.example.com:8080/org/repo       host:port (https:// inferred)
+
+All formats produce the same directory: <base>/github.com/org/repo
+
+Hostnames are lowercased. Trailing .git suffixes are stripped.
+Port numbers are stripped from the directory path but kept in the clone URL.
+Nested paths (org/suborg/repo) are supported.
+
+Environment:
+  GIT_CLONE_ROOT    Base directory for cloned repos (default: ~/code)
+
+Output:
+  stdout   On success: the absolute path to the cloned repository (one line).
+  stderr   All errors, warnings, and git clone progress output.
+
+Exit codes:
+  0   Clone succeeded.
+  1   Bad input, target already exists, or internal error.
+  *   On git clone failure, the exit code from git is forwarded.
+
+Cleanup behavior:
+  On clone failure, partial clones that are not recoverable are removed.
+  Empty parent directories created during the attempt are also removed.
+  Recoverable partial clones (HEAD resolves) are kept intact.
+
+Example — clone and cd into the result:
+  cd "$(git-clone github.com/org/repo)"`
+		fmt.Fprintln(os.Stderr, help)
+		return 0
+	}
 	if strings.HasPrefix(arg, "-") {
 		fmt.Fprintln(os.Stderr, "Usage: git-clone <repository-url>")
 		return 1
