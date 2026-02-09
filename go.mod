@@ -1,3 +1,3 @@
 module github.com/ljagiello/git-clone
 
-go 1.25.7
+go 1.25
