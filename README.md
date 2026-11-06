@@ -72,4 +72,4 @@ go build -o git-clone .
 
 [Apache License 2.0](LICENSE)
 
-Created by [Lukasz Jagiello](https://lukasz.jagiello.org).
+Created by [Lukasz Jagiello](https://lukasz.jagiello.org). Write-up: [lukasz.jagiello.org/projects/git-clone](https://lukasz.jagiello.org/projects/git-clone).
